@@ -120,7 +120,7 @@ void print_command(command_t *command) {
 } /* print_command() */
 
 /*
- *  Execute a command
+ *  Execute a command chain
  */
 
 void execute_command(command_t *command) {
@@ -130,7 +130,6 @@ void execute_command(command_t *command) {
     return;
   }
 
-  // Add execution here
   // For every single command fork a new process
   // Setup i/o redirection
   // and call exec
@@ -144,15 +143,12 @@ void execute_command(command_t *command) {
     exit(1);
   }
 
-  // set the initial input
+  // Set the initial input, if it is from a file then
+  // open that file and set up the file descriptor so
+  // that first command uses its input.
 
   int input_fd = -1;
   if (command->in_file != NULL) {
-    // input_fd = open(command->in_file,
-    // I assume that if they try and use an in_file that DNE
-    // then I need to print an error message like normal bash does
-    // i'll assume simplicity and then add that later
-
     input_fd = open(command->in_file, O_RDONLY);
 
     if (input_fd == -1) {
@@ -190,7 +186,9 @@ void execute_command(command_t *command) {
     // setup output
 
     if (i == command->num_single_commands - 1) {
-      // last single command
+      // If this is the last single command
+      // then prepare to redirect output to a file and do so
+      // with the proper options.
 
       if (command->out_file != NULL) {
         // always create if it DNE
@@ -227,12 +225,7 @@ void execute_command(command_t *command) {
         }
       }
 
-      // do the same for stderr
-      // for: ls ls | grep thiswillfindnomatches
-      // it just says the error for ls, it doesn't continue in the chain
-      // if a cmd fails, so stderr seems to only matter for the last cmd
-      // dunno how it will be handled if a exec cmd fails before
-      // the end of a command chain...
+      // Do the same for stderr
 
       if (command->err_file != NULL) {
         if (command->append_err) {
@@ -272,6 +265,9 @@ void execute_command(command_t *command) {
       // not last single command
       // create pipe
 
+      // redirect output so that it can be the input
+      // of the next command
+
       int pipe_fds[2] = {-1, -1};
 
       if (pipe(pipe_fds) == -1) {
@@ -283,7 +279,7 @@ void execute_command(command_t *command) {
       input_fd = pipe_fds[0];
     }
 
-    // redirect output
+    // actual redirection for output performed here
 
     if (dup2(output_fd, 1) == -1) {
       perror("dup2");
@@ -295,11 +291,12 @@ void execute_command(command_t *command) {
       exit(1);
     }
 
-    // i dont think I redirect error except for the last
-    // command
-    // redirect
+    // The following is code to prepare and execute
+    // one (the currently iterated) command of the command chain.
 
     char *argument = command->single_commands[i]->arguments[0];
+
+    // Bash built-ins implementation
 
     if (!strcmp(argument, "setenv")) {
       if (command->single_commands[i]->num_args > 3) {
@@ -345,6 +342,7 @@ void execute_command(command_t *command) {
         }
       }
     } else {
+      // If not a built-in, but a normal command
       ret = fork();
 
       if (ret == -1) {
@@ -373,6 +371,8 @@ void execute_command(command_t *command) {
 
           exit(0);
         } else {
+          // System call to run a bash command with arguments
+
           execvp(command->single_commands[i]->arguments[0],
                  command->single_commands[i]->arguments);
           perror("execvp");
@@ -382,11 +382,15 @@ void execute_command(command_t *command) {
     }
   }
 
+  // Restore I/O to saved defaults.
+
   if ((dup2(default_in, 0) == -1) || (dup2(default_out, 1) == -1) ||
       (dup2(default_err, 2) == -1)) {
     perror("dup2");
     exit(1);
   }
+
+  // Close extra file descriptors.
 
   if ((close(default_in) == -1) || (close(default_out) == -1) ||
       (close(default_err) == -1)) {
@@ -394,16 +398,14 @@ void execute_command(command_t *command) {
     exit(1);
   }
 
-  if (!command->background) {
-    // g_last_executed_pid = ret;
-    // printf("just set g_last_executed inside of command.c to %d\n", ret);
+  // Only wait for non-backgrounded processes.
 
+  if (!command->background) {
     int prev_errno = errno;
     if (waitpid(ret, NULL, 0) == -1) {
       if (errno == ECHILD) {
 
         // Do nothing, sigaction picked it up
-
         // Restore the errno
 
         errno = prev_errno;
